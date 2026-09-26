@@ -884,6 +884,10 @@ class HubClient {
 
   // ---- inbound ----
 
+  /// Frame-pump guard: whatever a single inbound frame's handler throws,
+  /// it must die HERE (as an onNotice) — never escape into the zone and
+  /// kill the host process. A hostile or buggy hub/peer sends one bad
+  /// frame; the connection and every later frame must survive it.
   Future<void> _onFrame(Object data) async {
     final Map<String, dynamic> frame;
     try {
@@ -891,6 +895,14 @@ class HubClient {
     } on FormatException {
       return;
     }
+    try {
+      await _dispatchFrame(frame);
+    } on Object catch (e) {
+      onNotice?.call('malformed hub frame ignored: $e');
+    }
+  }
+
+  Future<void> _dispatchFrame(Map<String, dynamic> frame) async {
     if (frame['t'] == 'enrolled') {
       _onEnrolled(frame['secret'] as String?);
       return;
@@ -1069,9 +1081,23 @@ class HubClient {
   ///   every fresh connection, arming the latch before any consumer
   ///   query — the first-query steal window is closed.
   void _onPresence(Map<String, dynamic> frame) {
-    final agents = (frame['agents'] as List? ?? [])
-        .map((raw) => _infoFrom((raw as Map).cast<String, dynamic>()))
-        .toList();
+    final agents = <AgentInfo>[];
+    for (final raw in (frame['agents'] as List? ?? const [])) {
+      // Roster entries are peer-controlled: a non-map row or an entry
+      // without a String agentId is skipped with a notice, never a cast
+      // crash (issue #988).
+      if (raw is! Map) {
+        onNotice?.call('presence: skipping non-map roster entry '
+            '(${raw.runtimeType})');
+        continue;
+      }
+      final entry = raw.cast<String, dynamic>();
+      if (entry['agentId'] is! String) {
+        onNotice?.call('presence: skipping roster entry without agentId');
+        continue;
+      }
+      agents.add(_infoFrom(entry));
+    }
     final replyTo = frame['replyTo'];
     if (replyTo is String && replyTo.isNotEmpty) {
       _replyToEchoSeen = true;
@@ -1088,13 +1114,24 @@ class HubClient {
 
   AgentInfo _infoFrom(Map<String, dynamic> frame) {
     final dhB64 = frame['x25519'] as String?;
+    final agentId = frame['agentId'] as String;
+    SimplePublicKey? dh;
+    if (dhB64 != null && dhB64.isNotEmpty) {
+      dh = _tryDhPubkey(dhB64);
+      if (dh == null) {
+        // Peer-controlled string we could not use — E2E with that peer
+        // is disabled, the roster entry stays (issue #988).
+        onNotice?.call('peer $agentId advertises an unusable x25519 key '
+            '(E2E with it disabled)');
+      }
+    }
     final lastSeenMs = frame['lastSeen'] as int?;
     return AgentInfo(
-      agentId: frame['agentId'] as String,
+      agentId: agentId,
       name: frame['name'] as String?,
       online: frame['online'] as bool? ?? false,
       signingPubkeyB64: frame['pubkey'] as String?,
-      dhPublicKey: (dhB64 == null || dhB64.isEmpty) ? null : _dhPubkey(dhB64),
+      dhPublicKey: dh,
       lastSeen: lastSeenMs == null
           ? null
           : DateTime.fromMillisecondsSinceEpoch(lastSeenMs, isUtc: true),
@@ -1166,6 +1203,37 @@ class HubClient {
 
   static SimplePublicKey _dhPubkey(String b64) =>
       SimplePublicKey(base64Decode(b64), type: KeyPairType.x25519);
+
+  /// Tolerant decode of a PEER-CONTROLLED x25519 string (presence /
+  /// agent_info): trims, strips quotes, percent-decodes `%3D` padding,
+  /// maps the base64url `-_` alphabet onto standard and re-pads. Returns
+  /// null when the result is not exactly 32 decodable bytes — never
+  /// throws (issue #988: a JS client's unpadded 43-char key must not
+  /// kill the process).
+  static SimplePublicKey? _tryDhPubkey(String raw) {
+    var s = raw.trim();
+    if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) {
+      s = s.substring(1, s.length - 1).trim();
+    }
+    if (s.contains('%')) {
+      try {
+        s = Uri.decodeComponent(s);
+      } on FormatException {
+        return null;
+      }
+    }
+    s = s.replaceAll('-', '+').replaceAll('_', '/');
+    final rem = s.length % 4;
+    if (rem == 1) return null; // no base64 shape has this length
+    if (rem == 2 || rem == 3) s += '=' * (4 - rem);
+    try {
+      final bytes = base64Decode(s);
+      if (bytes.length != 32) return null; // x25519 keys are 32 bytes
+      return SimplePublicKey(bytes, type: KeyPairType.x25519);
+    } on FormatException {
+      return null;
+    }
+  }
 }
 
 /// Pending by-name invites — `dap_invite <name>` against a user not yet

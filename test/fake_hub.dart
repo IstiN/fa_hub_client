@@ -103,6 +103,29 @@ class FakeHub {
     if (ws != null) _reply(ws, {'op': 'msg', ...msg});
   }
 
+  /// Pushes an ARBITRARY frame verbatim to an agent's live connection —
+  /// hostile/buggy-hub simulations the client must survive.
+  void pushFrame(String agentId, Map<String, dynamic> frame) {
+    final ws = _conns[agentId];
+    if (ws != null) _reply(ws, frame);
+  }
+
+  /// Seeds the persistent registry with a foreign peer whose `x25519`
+  /// string is VERBATIM (malformed-shape tests: unpadded base64,
+  /// percent-encoded padding, garbage — the roster is peer-controlled).
+  void injectPeer({
+    required String agentId,
+    required String x25519B64,
+    String? name,
+  }) {
+    _registry[agentId] = _RegistryEntry(
+      pubkeyB64: base64Encode(List.filled(32, 1)),
+      x25519B64: x25519B64,
+      name: name,
+      lastSeenMs: DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
   Stream<String> get hellos => _helloEvents.stream;
 
   Future<void> start() async {
