@@ -2,7 +2,7 @@ name: fa_hub_client
 description: >-
   DAP/1 hub client for flutter_agent_harness: MessagingRepository over a
   signed WebSocket, FahPlugin wiring delivery via Agent.externalSteeringSource.
-version: 0.2.8
+version: 0.2.9
 repository: https://github.com/IstiN/fa_hub_client
 
 environment:

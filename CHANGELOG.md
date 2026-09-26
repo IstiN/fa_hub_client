@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.9
+
+- **Fix: malformed peer `x25519` no longer kills the host process**
+  (flutter_agent_harness #988). Presence/agent-info keys are
+  peer-controlled strings; `_tryDhPubkey` now decodes them tolerantly
+  (trim, quote-strip, `%3D` percent-decode, base64url alphabet,
+  re-pad). Unpadded 43-char JS-client keys are RECOVERED (E2E with the
+  peer keeps working); anything not 32 decodable bytes degrades to
+  `dhPublicKey: null` + an `onNotice` — the roster entry survives.
+  Non-map / agentId-less roster entries are skipped with a notice.
+- **Fix: pre-welcome drops no longer escape as 'Bad state: connection
+  closed'** (the second #988 crash). A socket dying while the hello was
+  still signing made `_abandon` complete the welcome completer before
+  anyone awaited it — an unhandled zone error per reconnect attempt,
+  with an empty stack. The completer's future now carries `ignore()`.
+- Frame-pump guard: any single inbound frame handler throw lands in
+  `onNotice` ('malformed hub frame ignored') — one bad frame from a
+  hostile/buggy hub never takes the connection or the process down.
+
 ## 0.2.8
 
 - **Renamed and published as `fa_hub_client`** (the `fah_hub_client`

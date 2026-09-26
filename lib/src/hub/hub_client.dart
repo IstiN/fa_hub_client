@@ -403,6 +403,12 @@ class HubClient {
     _ws = ws;
     ws.pingInterval = pingInterval; // native liveness watchdog (see field doc)
     final welcomed = Completer<bool>();
+    // A drop BEFORE anyone awaits (the socket dies while the hello is
+    // still signing — 'Bad state: connection closed before welcome' in
+    // the wild, issue #988) must not turn the completer's error into an
+    // unhandled zone error that kills the host. ignore() only silences
+    // the nobody-awaited-it case; the await below still sees the error.
+    welcomed.future.ignore();
     final done = Completer<void>();
     _welcomeCompleter = welcomed;
     late final StreamSubscription sub;
