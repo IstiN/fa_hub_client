@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.10
+
+- **Join-denial tracking — no auto-rejoin after `access_denied`**
+  (flutter_agent_harness #1016). Master-gated hubs reject client-secret
+  joins of unknown channels (`access_denied: channel creation requires
+  the master secret`; the same code covers ACL rejections). The wire
+  error never names the channel, so joins are tracked in a
+  per-connection FIFO that the inbound `joined` ack (which does name
+  its channel) drains — a denial is matched to the join the hub has
+  not acked yet, exact under the ordered stream. A denial marks the
+  channel (client-level) and surfaces as `JoinDenied(channel, code,
+  msg)` on the new `joinDenials` stream; `_joinKnownChannels` skips
+  denied channels on later reconnects instead of retrying forever; an
+  explicit `join()` clears the mark (an invite may have arrived).
+
+
 ## 0.2.9
 
 - **Fix: malformed peer `x25519` no longer kills the host process**
