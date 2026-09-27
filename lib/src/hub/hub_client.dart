@@ -29,6 +29,27 @@ class HubError implements Exception {
   String toString() => 'HubError($code): $msg';
 }
 
+/// A channel join the hub denied (issue #1016). Master-gated hubs reject
+/// client-secret joins of unknown channels with `access_denied`
+/// (msg prefix "channel creation requires"); ACL rejections carry the
+/// same code with msg "pubkey not on channel ACL" — [msg] is the
+/// discriminator, the wire never echoes the channel id.
+class JoinDenied {
+  JoinDenied(this.channel, this.code, this.msg);
+
+  /// The channel the client attempted to join.
+  final String channel;
+
+  /// Always `access_denied` today; kept for forward compatibility.
+  final String code;
+
+  /// The hub's message (creation gate vs ACL).
+  final String msg;
+
+  @override
+  String toString() => 'JoinDenied($channel): $code $msg';
+}
+
 /// Frozen cross-adapter text for a hub bearer rejection (HTTP 401 before
 /// the websocket upgrade) — byte-identical in every DAP adapter; the hub
 /// answers `unauthorized` for a missing/unknown secret.
@@ -283,6 +304,18 @@ class HubClient {
 
   final _inbound = StreamController<InboundMessage>.broadcast();
   final _errors = StreamController<HubError>.broadcast();
+
+  final _joinDenials = StreamController<JoinDenied>.broadcast();
+
+  /// Channels the hub denied (issue #1016): `_joinKnownChannels` skips
+  /// these on later reconnects instead of re-attempting forever.
+  final Set<String> _joinDenied = {};
+
+  /// Joins sent on the CURRENT connection, in send order — the hub
+  /// answers denials in the same order (one TCP stream, in-order
+  /// processing) and the error frame never names the channel, so a
+  /// denial pops the FIFO head.
+  final List<String> _joinPending = [];
   final _welcomeEvents = StreamController<void>.broadcast();
 
   /// All inbound `msg` frames, oldest first.
@@ -291,6 +324,11 @@ class HubClient {
   /// Every hub `error` frame received (unknown_agent, access_denied, …).
   /// Hub rejections must never be silent — listeners surface them.
   Stream<HubError> get errors => _errors.stream;
+
+  /// Every channel join the hub denied (issue #1016): channel, code and
+  /// msg — hosts render "not invited / wrong channel id" instead of a
+  /// silent absence. An explicit [join] retries (and clears) the mark.
+  Stream<JoinDenied> get joinDenials => _joinDenials.stream;
 
   /// Fires after every accepted welcome (first connect and each
   /// reconnect) — the restart-redelivery hook for pending invites.
@@ -500,6 +538,7 @@ class HubClient {
     }
     await _inbound.close();
     await _errors.close();
+    await _joinDenials.close();
     await _welcomeEvents.close();
   }
 
@@ -599,21 +638,32 @@ class HubClient {
   /// Channel membership (spec § join): the first join creates the channel
   /// and registers [chanPubkeyB64]; re-join is idempotent — safe after
   /// every reconnect.
-  void join(String channel, String chanPubkeyB64) =>
-      _send({'op': 'join', 'channel': channel, 'chanPubkey': chanPubkeyB64});
+  void join(String channel, String chanPubkeyB64) {
+    // An explicit join retries even a previously denied channel — an
+    // invite may have arrived since (issue #1016).
+    _joinDenied.remove(channel);
+    _joinPending.add(channel);
+    _send({'op': 'join', 'channel': channel, 'chanPubkey': chanPubkeyB64});
+  }
 
   /// Membership: join every known channel after each welcome (idempotent,
   /// reconnect-safe). A failed join is transient — the reconnect loop
   /// retries after the next welcome.
   Future<void> _joinKnownChannels() async {
+    // Pending order is per connection: the FIFO is rebuilt from what we
+    // actually send below, so stale entries can never mis-match a denial
+    // from a previous socket (issue #1016).
+    _joinPending.clear();
     try {
       final store = channelStore;
       if (store != null) {
         for (final entry in store.all.entries) {
+          if (_joinDenied.contains(entry.key)) continue;
           join(entry.key, entry.value.pub);
         }
       }
       for (final entry in config.channels.entries) {
+        if (_joinDenied.contains(entry.key)) continue;
         if (store == null || !store.knows(entry.key))
           join(entry.key, entry.value);
       }
@@ -946,6 +996,11 @@ class HubClient {
         _completeWelcome(true);
       case 'error':
         _onError(frame);
+      case 'joined':
+        // Success ack names the channel — drop it from the pending FIFO
+        // so a later access_denied can only attribute to joins the hub
+        // has not acked yet (the denial frame never names its channel).
+        _joinPending.remove(frame['channel'] as String?);
       case 'msg':
         await _onMsg(frame);
       case 'agent_info':
@@ -997,6 +1052,17 @@ class HubClient {
       frame['msg'] as String? ?? '',
     );
     if (!_errors.isClosed) _errors.add(error); // never silent
+    // Master-gated hubs answer a denied join with access_denied (issue
+    // #1016). The frame carries no channel id; the hub processes joins
+    // in arrival order over one ordered stream, so the denial maps to
+    // the FIFO head of this connection's pending joins.
+    if (error.code == 'access_denied' && _joinPending.isNotEmpty) {
+      final channel = _joinPending.removeAt(0);
+      _joinDenied.add(channel);
+      if (!_joinDenials.isClosed) {
+        _joinDenials.add(JoinDenied(channel, error.code, error.msg));
+      }
+    }
     final welcome = _welcomeCompleter;
     if (welcome != null && !welcome.isCompleted) {
       _welcomeCompleter = null;

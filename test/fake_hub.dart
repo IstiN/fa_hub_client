@@ -16,9 +16,14 @@ import 'dart:math';
 import 'package:cryptography/cryptography.dart';
 
 class FakeHub {
-  FakeHub({this.masterSecret, Set<String>? silentOps, Set<String>? errorOps})
-      : silentOps = silentOps ?? <String>{},
-        errorOps = errorOps ?? <String>{};
+  FakeHub({
+    this.masterSecret,
+    Set<String>? silentOps,
+    Set<String>? errorOps,
+    Set<String>? joinDenied,
+  })  : silentOps = silentOps ?? <String>{},
+        errorOps = errorOps ?? <String>{},
+        joinDenied = joinDenied ?? <String>{};
 
   /// When set, every `/ws` dial needs `Authorization: Bearer <token>`
   /// with either the master secret or the issued client secret — a
@@ -32,6 +37,11 @@ class FakeHub {
   /// Ops answered with an `error` frame instead of the normal reply
   /// (error-door tests).
   final Set<String> errorOps;
+
+  /// Channels whose join is rejected with
+  /// `access_denied: channel creation requires the master secret`
+  /// (issue #1016 — master-gated hub simulation).
+  final Set<String> joinDenied;
 
   /// Client secret issued by the last accepted enroll (bound to
   /// [issuedName]); a re-enroll replaces it — the old secret then 401s.
@@ -425,6 +435,14 @@ class FakeHub {
 
   void _join(WebSocket ws, String agentId, Map<String, dynamic> frame) {
     final channel = frame['channel'] as String;
+    if (joinDenied.contains(channel)) {
+      _reply(ws, {
+        'op': 'error',
+        'code': 'access_denied',
+        'msg': 'channel creation requires the master secret',
+      });
+      return;
+    }
     channelMembers.putIfAbsent(channel, () => {}).add(agentId);
     if (!_joinEvents.isClosed) {
       _joinEvents.add(HubJoin(agentId: agentId, channel: channel));
