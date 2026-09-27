@@ -119,6 +119,40 @@ void main() {
     await bob.disconnect();
   }, timeout: timeout);
 
+  test('sendChannelEnvelope: caller-sealed payload rides the wire with the '
+      'frame id handed to the seal callback', () async {
+    final channelKeys = await X25519().newKeyPair();
+    final channelPub =
+        base64Encode((await channelKeys.extractPublicKey()).bytes);
+
+    final alice = await connect(hub, await HubIdentity.generate(),
+        channels: {'general': channelPub});
+    final bob = await connect(hub, await HubIdentity.generate(),
+        channels: {'general': channelPub});
+
+    String? sealedWithId;
+    final delivered = bob.inbound.first.timeout(const Duration(seconds: 5));
+    await alice.sendChannelEnvelope('general', (frameId) async {
+      sealedWithId = frameId;
+      // Self-describing fanet1-style frame: version byte + opaque payload
+      // (the hub must relay it byte-identically).
+      return base64Encode([0x01, ...utf8.encode('caller-sealed')]);
+    });
+    await delivered;
+
+    final wire = hub.relayed.single;
+    expect(wire['channel'], 'general');
+    expect(wire['id'], sealedWithId,
+        reason: 'the seal callback must receive the frame id on the wire');
+    expect(base64Decode(wire['ciphertext'] as String).first, 0x01);
+    expect(utf8.decode(base64Decode(wire['ciphertext'] as String).sublist(1)),
+        'caller-sealed');
+    expect(wire['sig'], isA<String>());
+
+    await alice.disconnect();
+    await bob.disconnect();
+  }, timeout: timeout);
+
   test('DM round-trip: whois first, then E2E decrypt on the recipient',
       () async {
     final alice =

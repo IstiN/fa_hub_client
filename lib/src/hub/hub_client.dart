@@ -634,6 +634,32 @@ class HubClient {
     );
   }
 
+  /// Advanced: sends a channel payload sealed by the CALLER. [seal] runs
+  /// with the freshly minted frame id (the AEAD AAD binds to it:
+  /// `dap1|<frameId>|<channel>`) and returns the base64 ciphertext.
+  ///
+  /// Use this to emit a self-describing envelope — e.g. the fa_network
+  /// `fanet1` frame `base64(0x01 || senderX25519(32) || nonce(12) || ct ||
+  /// tag)` — so recipients without hub whois access (the fa_network relay
+  /// passes payloads through byte-identical and stamps its own sender id)
+  /// can still decrypt.
+  Future<void> sendChannelEnvelope(
+    String channel,
+    Future<String> Function(String frameId) seal,
+  ) async {
+    final id = newFrameId();
+    final ciphertext = await seal(id);
+    final frame = <String, dynamic>{
+      'op': 'send',
+      'channel': channel,
+      'id': id,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+      'ciphertext': ciphertext,
+    };
+    frame['sig'] = await signFrame(frame, identity.signingKeyPair);
+    _send(frame);
+  }
+
   /// Explicit config first; otherwise the store auto-generates + persists
   /// the keypair and joins — creating the channel (spec § join: senders
   /// only need the channel public key).
