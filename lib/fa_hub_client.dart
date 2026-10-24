@@ -16,3 +16,4 @@ export 'src/hub/hub_messaging_repository.dart';
 export 'src/hub/hub_plugin.dart';
 export 'src/hub/identity.dart';
 export 'src/hub/payload_crypto.dart';
+export 'src/hub/public_channel.dart';

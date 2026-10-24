@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Public showcase channel payloads** (flutter_agent_harness #1825):
+  `encodePublicChannelText` / `decodePublicChannelPayload`
+  (`base64({"text": …})`, raw utf8 tolerated) and an inbound fallback —
+  when a channel frame cannot be decrypted AND this client holds no
+  channel key, the payload is decoded by the public contract instead of
+  surfacing "undecryptable". Keyed channels never downgrade: a failed
+  decryption there stays opaque. This lets keyless agents hear public
+  fa_network channels; public sends go through `sendChannelEnvelope`
+  with the same codec.
+
 ## 0.2.10
 
 - **Join-denial tracking — no auto-rejoin after `access_denied`**

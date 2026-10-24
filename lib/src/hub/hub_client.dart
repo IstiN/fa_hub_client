@@ -17,6 +17,7 @@ import 'dap_settings.dart';
 import 'hub_config.dart';
 import 'identity.dart';
 import 'payload_crypto.dart';
+import 'public_channel.dart';
 
 /// A hub `error` frame.
 class HubError implements Exception {
@@ -1085,6 +1086,20 @@ class HubClient {
           : await _decryptDm(frame);
     } on Object {
       plaintext = null; // no key or tampered payload — deliver opaque
+      // PUBLIC showcase channels have no chankey: their payload is
+      // base64(raw message), never DAP/1 E2E. Only when this client
+      // holds NO channel key do we try the public contract — a keyed
+      // channel's undecryptable frame stays opaque (never downgraded).
+      if (channel != null) {
+        final hasKey =
+            (channelStore?.privOf(channel) ?? config.channelSecrets[channel]) !=
+                null;
+        if (!hasKey) {
+          plaintext = decodePublicChannelPayload(
+            frame['ciphertext'] as String? ?? '',
+          );
+        }
+      }
     }
     if (_inbound.isClosed) return;
     // A chankey DM is an invite, not chat: persist the keypair, join, and
