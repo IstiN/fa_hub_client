@@ -643,9 +643,18 @@ class HubClient {
     // An explicit join retries even a previously denied channel — an
     // invite may have arrived since (issue #1016).
     _joinDenied.remove(channel);
+    // Remember EVERY explicit join — including keyless public channels,
+    // which live in neither channelStore nor config.channels and would
+    // otherwise silently lose their subscription on reconnect
+    // (flutter_agent_harness #1825).
+    _joinedChannels[channel] = chanPubkeyB64;
     _joinPending.add(channel);
     _send({'op': 'join', 'channel': channel, 'chanPubkey': chanPubkeyB64});
   }
+
+  /// Explicitly joined channels (any key shape) to restore after a
+  /// reconnect; store/config channels are handled separately.
+  final Map<String, String> _joinedChannels = {};
 
   /// Membership: join every known channel after each welcome (idempotent,
   /// reconnect-safe). A failed join is transient — the reconnect loop
@@ -667,6 +676,12 @@ class HubClient {
         if (_joinDenied.contains(entry.key)) continue;
         if (store == null || !store.knows(entry.key))
           join(entry.key, entry.value);
+      }
+      for (final entry in _joinedChannels.entries) {
+        if (_joinDenied.contains(entry.key)) continue;
+        if (config.channels.containsKey(entry.key)) continue;
+        if (store != null && store.knows(entry.key)) continue;
+        join(entry.key, entry.value);
       }
     } on Object {
       // socket dropped mid-join — the reconnect loop re-runs us

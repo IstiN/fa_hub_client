@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Reconnect restores explicit keyless joins** (flutter_agent_harness
+  #1825): `_joinKnownChannels` only knew channelStore/config channels,
+  so a public channel joined with `join(channel, '')` silently lost its
+  subscription after any reconnect/hub restart — the agent stopped
+  receiving channel mail while freshly connected peers kept getting it.
+  Every explicit `join` is now remembered and replayed after each
+  welcome (denied channels still skipped).
 - **Public showcase channel payloads** (flutter_agent_harness #1825):
   `encodePublicChannelText` / `decodePublicChannelPayload`
   (`base64({"text": …})`, raw utf8 tolerated) and an inbound fallback —

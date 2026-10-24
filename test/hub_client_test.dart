@@ -119,7 +119,8 @@ void main() {
     await bob.disconnect();
   }, timeout: timeout);
 
-  test('sendChannelEnvelope: caller-sealed payload rides the wire with the '
+  test(
+      'sendChannelEnvelope: caller-sealed payload rides the wire with the '
       'frame id handed to the seal callback', () async {
     final channelKeys = await X25519().newKeyPair();
     final channelPub =
@@ -200,6 +201,50 @@ void main() {
     expect(msg.from, bob.agentId);
     expect(hub.rejectedHellos, 0);
     expect(hub.deliveredTo, isEmpty); // never delivered live: queued path
+
+    await alice.disconnect();
+    await bob.disconnect();
+  }, timeout: timeout);
+
+  test('reconnect: explicit KEYLESS public-channel joins are restored',
+      () async {
+    final alice =
+        await connect(hub, await HubIdentity.generate(), backoff: tinyBackoff);
+    final bob = await connect(hub, await HubIdentity.generate());
+    // A public showcase membership: no channel key anywhere, so the
+    // store/config driven rejoin cannot know about it (gh-1825).
+    alice.join('public-room', '');
+    bob.join('public-room', '');
+
+    await bob.sendChannelEnvelope(
+      'public-room',
+      (frameId) async => encodePublicChannelText('before drop'),
+    );
+    await alice.inbound
+        .firstWhere((m) => m.plaintext == 'before drop')
+        .timeout(const Duration(seconds: 5));
+
+    // Drop alice hub-side; her reconnect must rejoin the channel or the
+    // next public message never reaches her.
+    final rejoined = hub.joins
+        .firstWhere(
+            (j) => j.agentId == alice.agentId && j.channel == 'public-room')
+        .timeout(const Duration(seconds: 5));
+    final offline = hub.agentOffline
+        .firstWhere((id) => id == alice.agentId)
+        .timeout(const Duration(seconds: 5));
+    await hub.closeAgent(alice.agentId!);
+    await offline;
+    await rejoined;
+
+    await bob.sendChannelEnvelope(
+      'public-room',
+      (frameId) async => encodePublicChannelText('after drop'),
+    );
+    final msg = await alice.inbound
+        .firstWhere((m) => m.plaintext == 'after drop')
+        .timeout(const Duration(seconds: 5));
+    expect(msg.channel, 'public-room');
 
     await alice.disconnect();
     await bob.disconnect();
