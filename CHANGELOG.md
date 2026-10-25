@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.11
 
 - **fanet1 self-describing channel frames** (flutter_agent_harness
   #1825): `sealFanet1`/`openFanet1`/`isFanet1Payload` and
