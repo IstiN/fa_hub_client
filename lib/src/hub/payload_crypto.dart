@@ -63,22 +63,32 @@ Future<String> encryptPayload({
   required String frameId,
   required String aadTarget,
   required String plaintext,
+  List<int>? nonce,
 }) async {
   final key = await _deriveKey(
     senderDhKeyPair,
     recipientDhPubkey,
     frameId,
   );
-  final nonce = Uint8List.fromList(
-    List.generate(_nonceLength, (_) => _random.nextInt(256)),
-  );
+  final nonceBytes = nonce == null
+      ? Uint8List.fromList(
+          List.generate(_nonceLength, (_) => _random.nextInt(256)),
+        )
+      : Uint8List.fromList(nonce);
+  if (nonceBytes.length != _nonceLength) {
+    throw ArgumentError.value(
+      nonce,
+      'nonce',
+      'must contain exactly $_nonceLength bytes',
+    );
+  }
   final box = await _aead.encrypt(
     utf8.encode(plaintext),
     secretKey: SecretKey(key),
-    nonce: nonce,
+    nonce: nonceBytes,
     aad: utf8.encode('dap1|$frameId|$aadTarget'),
   );
-  return base64Encode([...nonce, ...box.cipherText, ...box.mac.bytes]);
+  return base64Encode([...nonceBytes, ...box.cipherText, ...box.mac.bytes]);
 }
 
 /// Decrypts a payload produced by [encryptPayload]. [aadTarget] must equal

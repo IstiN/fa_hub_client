@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **fanet1 self-describing channel frames** (flutter_agent_harness
+  #1825): `sealFanet1`/`openFanet1`/`isFanet1Payload` and
+  `HubClient.sendChannelFanet1` carry the sender X25519 key in the
+  frame (`0x01 || senderX || nonce || ct || tag`, AAD
+  `dap1|<frameId>|<channelId>`), so fa_network app members decrypt with
+  the channel key alone — no whois/senderKey lookup. Inbound channel
+  frames now open fanet1 first and fall back to the legacy RAW dap/1
+  decoder (a RAW nonce may also start with `0x01`); failed decodes stay
+  opaque. `sendToChannel` keeps the RAW wire format for pure-DAP peers.
+  Known-answer tests pin the fa_network vectors byte-for-byte.
 - **Reconnect restores explicit keyless joins** (flutter_agent_harness
   #1825): `_joinKnownChannels` only knew channelStore/config channels,
   so a public channel joined with `join(channel, '')` silently lost its

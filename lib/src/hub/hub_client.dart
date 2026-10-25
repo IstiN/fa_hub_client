@@ -14,6 +14,7 @@ import 'package:cryptography/cryptography.dart';
 import 'canonical.dart';
 import 'channels.dart';
 import 'dap_settings.dart';
+import 'fanet1.dart';
 import 'hub_config.dart';
 import 'identity.dart';
 import 'payload_crypto.dart';
@@ -227,6 +228,10 @@ class HubClient {
   /// Set once the stale-config-secret 401 escalation has run — exactly
   /// one retry per client, never a loop.
   bool _reenrolled = false;
+
+  /// In-flight issued-secret persistence, awaited by [disconnect] so its
+  /// file write cannot outlive the client (or recreate a removed config).
+  Future<void>? _enrollPersistence;
 
   /// `~/.dap/config.json` (or `DAP_CONFIG_FILE`): where the hub-issued
   /// client secret is persisted ([persistDapConfig]). Null skips
@@ -533,6 +538,7 @@ class HubClient {
     _closing = true;
     await _subscription?.cancel();
     await _ws?.close();
+    await _enrollPersistence;
     _failPending('disconnecting');
     if (!_firstWelcome.isCompleted) {
       _firstWelcome.completeError(StateError('disconnected'));
@@ -697,6 +703,25 @@ class HubClient {
       recipientDhPubkey: _dhPubkey(pubkeyB64),
       aadTarget: channel,
       text: text,
+    );
+  }
+
+  /// Sends a self-describing fanet1 channel frame for fa_network members.
+  /// Unlike [sendToChannel], recipients need only the channel private key:
+  /// the sender X25519 public key rides in the frame, so no whois is needed.
+  /// The frame id used on the wire is also the AEAD AAD frame id.
+  Future<void> sendChannelFanet1(String channel, String text) async {
+    final pubkeyB64 = await _channelPubFor(channel);
+    final channelPub = _dhPubkey(pubkeyB64);
+    await sendChannelEnvelope(
+      channel,
+      (frameId) => sealFanet1(
+        senderIdentity: identity.dhKeyPair,
+        channelPub: channelPub,
+        frameId: frameId,
+        channelId: channel,
+        plaintext: text,
+      ),
     );
   }
 
@@ -1047,7 +1072,7 @@ class HubClient {
     if (!_enroll || secret == null || secret.isEmpty) return;
     _enroll = false;
     _clientSecret = secret;
-    unawaited(_persistEnrolled());
+    _enrollPersistence = _persistEnrolled();
   }
 
   Future<void> _persistEnrolled() async {
@@ -1146,21 +1171,37 @@ class HubClient {
         channelStore?.privOf(channel) ?? config.channelSecrets[channel];
     final pubB64 = channelStore?.pubOf(channel) ?? config.channels[channel];
     if (privB64 == null || pubB64 == null) throw StateError('no channel key');
-    // Sender encrypted with senderPriv x channelPub; we decrypt with
-    // channelPriv x senderPub (the sender is a registered agent).
+    final channelKeyPair = SimpleKeyPairData(
+      base64Decode(privB64),
+      publicKey: _dhPubkey(pubB64),
+      type: KeyPairType.x25519,
+    );
+    final ciphertextB64 = frame['ciphertext'] as String;
+    if (isFanet1Payload(ciphertextB64)) {
+      try {
+        final opened = await openFanet1(
+          channelKeyPair: channelKeyPair,
+          frameId: frame['id'] as String,
+          channelId: channel,
+          payloadB64: ciphertextB64,
+        );
+        return opened.plaintext;
+      } on Object {
+        // A legacy RAW dap/1 nonce can also start with 0x01. Fall through
+        // to its authenticated decoder; failures still surface as opaque.
+      }
+    }
+    // RAW dap/1: sender encrypted with senderPriv x channelPub; we decrypt
+    // with channelPriv x senderPub (the sender is a registered agent).
     final sender = await whois(frame['from'] as String);
     final senderKey = sender.dhPublicKey;
     if (senderKey == null) throw StateError('no sender dh pubkey');
     return decryptPayload(
-      recipientDhKeyPair: SimpleKeyPairData(
-        base64Decode(privB64),
-        publicKey: _dhPubkey(pubB64),
-        type: KeyPairType.x25519,
-      ),
+      recipientDhKeyPair: channelKeyPair,
       senderDhPubkey: senderKey,
       frameId: frame['id'] as String,
       aadTarget: channel,
-      ciphertextB64: frame['ciphertext'] as String,
+      ciphertextB64: ciphertextB64,
     );
   }
 
